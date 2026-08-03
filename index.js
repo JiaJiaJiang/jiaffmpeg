@@ -49,7 +49,7 @@ function initPath(paths = {}) {
 		ffmpegPath = paths.ffmpeg;
 	}
 	if (paths.ffprobe) {
-		ffprobePath = paths.ffprobe;
+		process.env.FFPROBE_PATH = ffprobePath = paths.ffprobe;
 	}
 	initFessonia();
 }
