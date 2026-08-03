@@ -78,10 +78,40 @@ function normalizeOptions(options) {
 	return new Map();
 }
 
-async function transcode(inputPath, inputOptions, outputPath, outputOptions, events) {
+/**
+ * 将选项 Map 展开为 [name, arg] 数组列表
+ * 数组值会拆成多个同名参数，例如 'map': ['0:0','0:1'] -> [['map','0:0'],['map','0:1']]
+ * @param {object|Map} options 选项参数
+ * @returns {Array<[string, *]>} 展开后的 [name, arg] 列表
+ */
+function expandOptions(options) {
+	const map = normalizeOptions(options);
+	const expanded = [];
+	for (const [name, arg] of map) {
+		if (Array.isArray(arg)) {
+			for (const item of arg) {
+				expanded.push([name, item]);
+			}
+		} else {
+			expanded.push([name, arg]);
+		}
+	}
+	return expanded;
+}
+
+/**
+ * 将展开后的 [name, arg] 列表添加到 FFmpegInput / FFmpegOutput 上
+ * @param {object} entity FFmpegInput 或 FFmpegOutput 实例
+ * @param {Array<[string, *]>} expanded 展开后的 [name, arg] 列表
+ */
+function addExpandedOptions(entity, expanded) {
+	for (const [name, arg] of expanded) {
+		entity.addOptions(new Map([[name, arg]]));
+	}
+}
+
+async function transcode(inputPath, inputOptions, outputPath, outputOptions, events, dryRun = false) {
 	const { FFmpegCommand, FFmpegInput, FFmpegOutput } = getFessonia();
-	const inputOptionsMap = normalizeOptions(inputOptions);
-	const outputOptionsMap = normalizeOptions(outputOptions);
 	const cmd = new FFmpegCommand();
 	// 为命令分配全局唯一 id
 	cmd.taskId = nextTaskId++;
@@ -96,12 +126,20 @@ async function transcode(inputPath, inputOptions, outputPath, outputOptions, eve
 		cmd.on('error', events.error);//事件参数(err)
 	}
 	return new Promise((resolve, reject) => {
-		const ffin = new FFmpegInput(inputPath, inputOptionsMap);
-		const ffout = new FFmpegOutput(outputPath, outputOptionsMap);
+		const ffin = new FFmpegInput(inputPath);
+		const ffout = new FFmpegOutput(outputPath);
+		// 展开数组值，支持重复名称参数（如多个 -map）
+		addExpandedOptions(ffin, expandOptions(inputOptions));
+		addExpandedOptions(ffout, expandOptions(outputOptions));
 		cmd.addInput(ffin);
 		cmd.addOutput(ffout);
 		if (events && typeof events.spawn === 'function') {
 			events.spawn({ command: cmd.toString() });//自定义事件，通知外部最终执行的指令
+		}
+		if (dryRun) {
+			// dryRun 模式：只给出最终命令，不实际运行
+			resolve({ dryRun: true, command: cmd.toString() });
+			return;
 		}
 		cmd.on('success', resolve);
 		cmd.on('error', reject);
