@@ -1,0 +1,16 @@
+{
+  "name": "jiaffmpeg",
+  "version": "1.0.0",
+  "description": "luojia's ffmpeg utils",
+  "license": "MIT",
+  "author": "luojia@luojia.me",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test test.js"
+  },
+  "dependencies": {
+    "@tedconf/fessonia": "^2.2.1",
+    "ffprobe-client": "^1.1.6"
+  }
+}
