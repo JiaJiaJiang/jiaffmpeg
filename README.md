@@ -137,6 +137,79 @@ const opts = new Map([
 await jiaffmpeg.transcode('input.mp4', {}, 'output.mp4', opts);
 ```
 
+### `videoMeta(filePath)`
+
+探测视频元信息，返回包含视频流 / 音频流分类的标准 ffprobe JSON。
+
+- `filePath`：视频文件路径
+- 返回：`Promise<object>`，在原始 ffprobe 结果基础上额外附带 `videoStreams` / `audioStreams` 数组
+
+```js
+const meta = await jiaffmpeg.videoMeta('input.mp4');
+console.log('时长:', meta.format.duration);
+console.log('视频流数量:', meta.videoStreams.length);
+```
+
+### `checkImageQuality(image, relaxMode)`
+
+检测图片质量，返回一个代表图片质量的分数（分数越高质量越好）。
+
+- `image`：图片文件路径或图片 `Buffer`
+- `relaxMode`：`boolean`，是否放宽质量要求（跳过阈值过滤），默认 `false`
+- 返回：`Promise<number>` 质量分数
+
+默认实现根据图片的 `entropy` 和 `sharpness` 加权求和（entropy 占 70%，sharpness 占 30%）。非 `relaxMode` 下，若 `entropy < 4` 或 `sharpness < 0.15` 则分数为 `0`。
+
+```js
+const score = await jiaffmpeg.checkImageQuality('frame.jpg');
+console.log('图片质量分数:', score);
+```
+
+### `extractVideoPreview(filePath, options)`
+
+提取视频预览图，采用三级降级策略，返回图片 `Buffer`。
+
+- `filePath`：视频文件路径
+- `options`：可选，`{ checkImageQuality }` 可传入自定义图片质量评分函数（默认使用内置 `checkImageQuality`）
+- 返回：`Promise<Buffer>` 预览图 buffer
+
+**三级降级策略：**
+
+1. **第一级**：用 ffmpeg `-ss` 快速 seek 在视频中均匀采样 30 帧（超过 15 分钟的视频跳过开头 5 分钟），按图片质量分数取最大的那个；若分数都为 0 进入第二级
+2. **第二级**：视频前 30 秒内每隔 1 秒采样一帧，评分与处理方式同第一级
+3. **第三级**：取视频第一帧、中间帧和最后一帧，用 `relaxMode` 评分取分最高者；若全为 0 则取中间帧兜底
+
+```js
+const preview = await jiaffmpeg.extractVideoPreview('input.mp4');
+// preview 为 Buffer，可直接写入文件或进一步处理
+```
+
+### `sampleVideoFrames(filePath, options, handler)`
+
+均匀采样视频帧，用于提取视频中指定时间间隔或帧间隔的图片。
+
+- `filePath`：视频文件路径
+- `options`：采样选项
+  - `interval`：时间间隔（秒），与 `frameInterval` 二选一，优先于 `frameInterval`
+  - `frameInterval`：帧间隔（帧数），需要视频帧率信息
+  - `start`：起始时间（秒），默认 `0`
+  - `end`：结束时间（秒），默认到视频末尾
+- `handler`：接收函数，每提取一帧调用一次，参数为 `(buffer, timeSec)`
+- 返回：`Promise<number>` 成功提取的帧数
+
+```js
+let count = 0;
+const n = await jiaffmpeg.sampleVideoFrames(
+  'input.mp4',
+  { interval: 1 },
+  (buffer, t) => {
+    count++;
+    console.log(`第 ${t}s 帧，大小 ${buffer.length}B`);
+  }
+);
+console.log('共提取帧数:', n);
+```
+
 ### 导出的 fessonia 类
 
 `FFmpegCommand`、`FFmpegInput`、`FFmpegOutput` 三个类也会被导出，供需要底层控制的场景使用。它们通过 getter 动态获取，`initPath()` 重新初始化后始终指向最新实例。
