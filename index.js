@@ -123,6 +123,17 @@ function addExpandedOptions(entity, expanded) {
 	}
 }
 
+/**
+ * 执行一次转码任务
+ * 支持单个或多个输入（inputPath 为字符串或数组，inputOptions 对应为对象或数组）
+ * @param {string|string[]} inputPath 输入文件路径，或输入文件路径数组（多输入）
+ * @param {object|Map|Array} inputOptions 输入选项，或与输入对应的选项数组
+ * @param {string} outputPath 输出文件路径
+ * @param {object|Map} outputOptions 输出选项
+ * @param {object} [events] 事件监听器
+ * @param {boolean} [dryRun=false] 是否仅生成命令不实际运行
+ * @returns {Promise<object>} 转码成功时 resolve
+ */
 async function transcode(inputPath, inputOptions, outputPath, outputOptions, events, dryRun = false) {
 	const { FFmpegCommand, FFmpegInput, FFmpegOutput } = getFessonia();
 	const cmd = new FFmpegCommand();
@@ -139,12 +150,17 @@ async function transcode(inputPath, inputOptions, outputPath, outputOptions, eve
 		cmd.on('error', events.error);//事件参数(err)
 	}
 	return new Promise((resolve, reject) => {
-		const ffin = new FFmpegInput(inputPath);
+		// 规范化输入为数组，支持多输入
+		const inputPaths = Array.isArray(inputPath) ? inputPath : [inputPath];
+		const inputOptsList = Array.isArray(inputOptions) ? inputOptions : [inputOptions];
+		for (let i = 0; i < inputPaths.length; i++) {
+			const ffin = new FFmpegInput(inputPaths[i]);
+			addExpandedOptions(ffin, expandOptions(inputOptsList[i]));
+			cmd.addInput(ffin);
+		}
 		const ffout = new FFmpegOutput(outputPath);
 		// 展开数组值，支持重复名称参数（如多个 -map）
-		addExpandedOptions(ffin, expandOptions(inputOptions));
 		addExpandedOptions(ffout, expandOptions(outputOptions));
-		cmd.addInput(ffin);
 		cmd.addOutput(ffout);
 		if (events && typeof events.spawn === 'function') {
 			events.spawn({ command: cmd.toString() });//自定义事件，通知外部最终执行的指令
@@ -206,6 +222,34 @@ async function checkAudioEncoder(codec) {
 	} catch (err) {
 		return false;
 	}
+}
+
+// 视频编码器选择缓存：首次测试后缓存结果，避免每次转码都重新测试
+let cachedVideoEncoder = null;
+let videoEncoderTested = false;
+
+/**
+ * 自动选择一个可用的视频编码器
+ * 按 ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265'] 顺序尝试，返回第一个可用的
+ * 结果会缓存，只在首次调用时测试（最外层测试一次，不每次转码都测试）
+ * @returns {Promise<string>} 可用的视频编码器名称
+ */
+async function pickVideoEncoder() {
+	if (videoEncoderTested) {
+		return cachedVideoEncoder;
+	}
+	const candidates = ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265'];
+	for (const codec of candidates) {
+		if (await checkVideoEncoder(codec)) {
+			cachedVideoEncoder = codec;
+			break;
+		}
+	}
+	if (!cachedVideoEncoder) {
+		cachedVideoEncoder = 'libx265';
+	}
+	videoEncoderTested = true;
+	return cachedVideoEncoder;
 }
 
 /**
@@ -510,6 +554,7 @@ module.exports = {
 	initPath,
 	checkVideoEncoder,
 	checkAudioEncoder,
+	pickVideoEncoder,
 	transcode,
 	videoMeta,
 	getKeyframeTimestamps,
