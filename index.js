@@ -230,15 +230,15 @@ let videoEncoderTested = false;
 
 /**
  * 自动选择一个可用的视频编码器
- * 按 ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265'] 顺序尝试，返回第一个可用的
+ * 按传入的候选编码器顺序尝试，返回第一个可用的；若都不可用则返回候选列表最后一个
  * 结果会缓存，只在首次调用时测试（最外层测试一次，不每次转码都测试）
+ * @param {string[]} [candidates] 候选编码器列表，默认 ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265']
  * @returns {Promise<string>} 可用的视频编码器名称
  */
-async function pickVideoEncoder() {
+async function pickVideoEncoder(candidates = ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265']) {
 	if (videoEncoderTested) {
 		return cachedVideoEncoder;
 	}
-	const candidates = ['hevc_nvenc', 'hevc_amf', 'hevc_qsv', 'libx265'];
 	for (const codec of candidates) {
 		if (await checkVideoEncoder(codec)) {
 			cachedVideoEncoder = codec;
@@ -246,7 +246,7 @@ async function pickVideoEncoder() {
 		}
 	}
 	if (!cachedVideoEncoder) {
-		cachedVideoEncoder = 'libx265';
+		cachedVideoEncoder = candidates[candidates.length - 1];
 	}
 	videoEncoderTested = true;
 	return cachedVideoEncoder;
