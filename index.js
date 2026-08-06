@@ -178,26 +178,28 @@ async function transcode(inputPath, inputOptions, outputPath, outputOptions, eve
 
 /**
  * 检查视频编码器是否真正可用
+ * 通过实际编码一帧并检查退出码判断；使用 spawn 避免 execFile 的 maxBuffer 限制
  * @param {string} codec 视频编码器名称，例如 'libx264'
  * @returns {Promise<boolean>} 编码器可用返回 true，否则返回 false
  */
 async function checkVideoEncoder(codec) {
 	const { FFmpegCommand, FFmpegInput, FFmpegOutput } = getFessonia();
-	const input = new FFmpegInput('nullsrc=s=16x16:d=0.1', { f: 'lavfi' });
+	// 使用足够大的测试尺寸（320x240）并指定 yuv420p，避免硬件编码器（如 NVENC）的最小尺寸限制
+	const input = new FFmpegInput('nullsrc=s=320x240:d=0.1', { f: 'lavfi' });
 	const output = new FFmpegOutput('-', {
 		'c:v': codec,
+		'pix_fmt': 'yuv420p',
 		'frames:v': 1,
 		f: 'null'
 	});
 	const command = new FFmpegCommand();
 	command.addInput(input);
 	command.addOutput(output);
-	try {
-		await command.execute();
-		return true;
-	} catch (err) {
-		return false;
-	}
+	return new Promise((resolve) => {
+		const proc = command.spawn(false);
+		proc.on('error', () => resolve(false));
+		proc.on('exit', (code) => resolve(code === 0));
+	});
 }
 
 /**
