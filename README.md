@@ -210,6 +210,148 @@ const n = await jiaffmpeg.sampleVideoFrames(
 console.log('共提取帧数:', n);
 ```
 
+### `evalFrameRate(rateStr)`
+
+解析 ffprobe 的帧率字符串，如 `"30000/1001"` → `29.97`。
+
+- `rateStr`：帧率字符串
+- 返回：`number` 帧率数值，无法解析时返回 `0`
+
+```js
+const fps = jiaffmpeg.evalFrameRate('30000/1001');
+console.log(fps); // 29.97
+```
+
+### `calcDataDensity(stream)`
+
+计算视频流数据密度（`bit_rate / (fps * width * height)`），用于判断视频是否需要压缩。
+
+- `stream`：视频流信息对象
+- 返回：`number` 数据密度，无法计算时返回 `0`
+
+```js
+const density = jiaffmpeg.calcDataDensity(videoStream);
+console.log('数据密度:', density);
+```
+
+### `getLargestVideoStream(streams)`
+
+获取视频中最大的视频流（按宽高乘积比较）。
+
+- `streams`：流数组
+- 返回：`object|null` 最大的视频流，无视频流时返回 `null`
+
+```js
+const largest = jiaffmpeg.getLargestVideoStream(info.streams);
+```
+
+### `getFirstAudioStream(streams)`
+
+获取第一个音频流。
+
+- `streams`：流数组
+- 返回：`object|null` 第一个音频流，无音频流时返回 `null`
+
+```js
+const audio = jiaffmpeg.getFirstAudioStream(info.streams);
+```
+
+### `selectVideoEncoder(codecType, candidatesMap)`
+
+按候选编码器顺序选择可用的视频编码器，返回第一个可用的；都不可用返回 `null`。
+
+- `codecType`：目标编码类型 `'h265'` 或 `'h264'`
+- `candidatesMap`：可选，候选编码器映射，默认 h265/h264 各含 nvenc、qsv、amf、libx 顺序
+- 返回：`Promise<string|null>` 可用的编码器名称
+
+```js
+const encoder = await jiaffmpeg.selectVideoEncoder('h265');
+console.log('可用编码器:', encoder); // 如 'hevc_nvenc'
+```
+
+### `buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware)`
+
+构建转码输出选项，**根据编码器类型自动适配参数**（nvenc / amf / qsv / libx 各编码器支持的参数不同）。
+
+- `videoStream`：视频流
+- `audioStream`：音频流（可为 `null`）
+- `videoEncoder`：视频编码器名称
+- `videoOpts`：视频转码参数对象
+  - `quantizationQuality`：量化质量（libx 用 `crf`，nvenc 用 `constqp+qp`，amf 用 `cqp+qp_i/qp_p`，qsv 用 `global_quality`）
+  - `qualityGap`：质量差距（允许的最差质量值）
+  - `profile`：编码 profile（如 `main`）
+  - `minKeyframeInterval`：关键帧间隔
+  - `sceneChangeThreshold`：场景变化阈值（仅软件编码器）
+  - `fpsMode`：帧率模式
+  - `hardwareDecoder`：是否使用硬件解码
+- `audioOpts`：音频转码参数对象（`targetCodec`、`quality`、`bitrate`）
+- `useHardware`：是否使用硬件编码
+- 返回：`Map<string, *>` 输出选项
+
+```js
+const opts = jiaffmpeg.buildOutputOptions(
+  videoStream, audioStream, 'hevc_nvenc',
+  { quantizationQuality: 23, qualityGap: 13, profile: 'main' },
+  { targetCodec: 'aac', quality: 1 },
+  true
+);
+```
+
+### `transcodeVideo(src, dest, videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware, onProgress)`
+
+执行视频转码（自动构建输出选项并映射视频/音频流）。
+
+- `src`：源文件路径
+- `dest`：目标文件路径
+- `videoStream`：视频流
+- `audioStream`：音频流（可为 `null`）
+- `videoEncoder`：视频编码器名称
+- `videoOpts`：视频转码参数（见 `buildOutputOptions`）
+- `audioOpts`：音频转码参数
+- `useHardware`：是否使用硬件编码
+- `onProgress`：可选，进度回调 `(data) => {}`
+- 返回：`Promise<object>` 转码结果
+
+```js
+await jiaffmpeg.transcodeVideo(
+  'input.mp4', 'output.mp4',
+  videoStream, audioStream, 'hevc_nvenc',
+  { quantizationQuality: 23 }, { targetCodec: 'aac' },
+  true,
+  (data) => console.log('进度:', data)
+);
+```
+
+### `probeMedia(filePath)`
+
+用 ffprobe 解析媒体文件，返回标准 ffprobe JSON。无法解析时抛出异常（可用于扫描时判断文件是否有效）。
+
+- `filePath`：媒体文件路径
+- 返回：`Promise<object>` ffprobe 结果
+
+```js
+try {
+  const info = await jiaffmpeg.probeMedia('input.mp4');
+  console.log('解析成功');
+} catch (e) {
+  console.log('无法解析，跳过处理');
+}
+```
+
+### `verifyTranscodedFile(filePath)`
+
+校验转码目标文件：能被 ffprobe 正确解析，且至少有一个音频或视频轨道。
+
+- `filePath`：目标文件路径
+- 返回：`Promise<boolean>` 校验通过返回 `true`，否则返回 `false`
+
+```js
+const valid = await jiaffmpeg.verifyTranscodedFile('output.mp4');
+if (!valid) {
+  console.log('转码结果无效');
+}
+```
+
 ### 导出的 fessonia 类
 
 `FFmpegCommand`、`FFmpegInput`、`FFmpegOutput` 三个类也会被导出，供需要底层控制的场景使用。它们通过 getter 动态获取，`initPath()` 重新初始化后始终指向最新实例。

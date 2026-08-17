@@ -551,6 +551,269 @@ async function sampleVideoFrames(filePath, options = {}, handler) {
 	return count;
 }
 
+// ==================== 媒体分析 / 转码辅助（供外部项目复用） ====================
+
+/**
+	* 解析 ffprobe 的帧率字符串，如 "30000/1001" -> 29.97
+	* @param {string} rateStr 帧率字符串
+	* @returns {number} 帧率数值，无法解析时返回 0
+	*/
+function evalFrameRate(rateStr) {
+	if (!rateStr) return 0;
+	const parts = String(rateStr).split('/');
+	const num = parseFloat(parts[0]);
+	const den = parts.length > 1 ? parseFloat(parts[1]) : 1;
+	if (!den) return 0;
+	return num / den;
+}
+
+/**
+	* 计算视频流数据密度（bit_rate / (fps * width * height)）
+	* @param {object} stream 视频流信息
+	* @returns {number} 数据密度，无法计算时返回 0
+	*/
+function calcDataDensity(stream) {
+	if (!stream || !stream.bit_rate) return 0;
+	const fps = evalFrameRate(stream.avg_frame_rate);
+	const w = stream.width || 0;
+	const h = stream.height || 0;
+	if (!fps || !w || !h) return 0;
+	return parseFloat(stream.bit_rate) / (fps * w * h);
+}
+
+/**
+	* 获取视频中最大的视频流（按宽高乘积比较）
+	* @param {Array<object>} streams 流数组
+	* @returns {object|null} 最大的视频流，无视频流时返回 null
+	*/
+function getLargestVideoStream(streams) {
+	let largest = null;
+	for (const s of streams) {
+		if (s.codec_type !== 'video') continue;
+		if (!largest) {
+			largest = s;
+			continue;
+		}
+		const cur = (s.width || 0) * (s.height || 0);
+		const best = (largest.width || 0) * (largest.height || 0);
+		if (cur > best) largest = s;
+	}
+	return largest;
+}
+
+/**
+	* 获取第一个音频流
+	* @param {Array<object>} streams 流数组
+	* @returns {object|null} 第一个音频流，无音频流时返回 null
+	*/
+function getFirstAudioStream(streams) {
+	return streams.find((s) => s.codec_type === 'audio') || null;
+}
+
+/**
+	* 选择可用的视频编码器
+	* 按候选编码器顺序尝试，返回第一个可用的；都不可用返回 null
+	* @param {string} codecType 目标编码类型 'h265' 或 'h264'
+	* @param {object} [candidatesMap] 候选编码器映射，默认 h265/h264 各含 nvenc,qsv,amf,libx 顺序
+	* @returns {Promise<string|null>} 可用的编码器名称，无可用时返回 null
+	*/
+async function selectVideoEncoder(codecType, candidatesMap) {
+	const map = candidatesMap || {
+		h265: ['hevc_nvenc', 'hevc_qsv', 'hevc_amf', 'libx265'],
+		h264: ['h264_nvenc', 'h264_qsv', 'h264_amf', 'libx264']
+	};
+	const candidates = map[codecType] || map.h265;
+	for (const enc of candidates) {
+		try {
+			const ok = await checkVideoEncoder(enc);
+			if (ok) return enc;
+		} catch (e) {
+			// 继续尝试下一个
+		}
+	}
+	return null;
+}
+
+/**
+	* 构建转码输出选项
+	* @param {object} videoStream 视频流
+	* @param {object|null} audioStream 音频流
+	* @param {string} videoEncoder 视频编码器
+	* @param {object} videoOpts 视频转码参数（densityThreshold 等由调用方判断，这里只接收编码相关参数）
+	* @param {object} audioOpts 音频转码参数
+	* @param {boolean} useHardware 是否使用硬件编码
+	* @returns {Map<string, *>} 输出选项 Map
+	*/
+// 识别编码器类型
+function encoderKind(videoEncoder) {
+	if (videoEncoder.includes('nvenc')) return 'nvenc';
+	if (videoEncoder.includes('amf')) return 'amf';
+	if (videoEncoder.includes('qsv')) return 'qsv';
+	if (videoEncoder.startsWith('libx')) return 'libx';
+	return 'other';
+}
+
+function buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware) {
+	const opts = new Map();
+	const kind = encoderKind(videoEncoder);
+
+	// 视频编码
+	opts.set('c:v', videoEncoder);
+
+	const q = videoOpts.quantizationQuality;
+	const gap = videoOpts.qualityGap;
+
+	if (kind === 'libx') {
+		// 软件编码器（libx264/libx265）：使用 crf 控制质量
+		if (q != null) opts.set('crf', String(q));
+		// 质量差距：允许的最差质量值（crf_max）
+		if (q != null && gap != null) opts.set('crf_max', String(q + gap));
+		if (videoOpts.profile != null) opts.set('profile', videoOpts.profile);
+		if (videoOpts.minKeyframeInterval != null) opts.set('keyint_min', String(videoOpts.minKeyframeInterval));
+		if (videoOpts.sceneChangeThreshold != null) opts.set('sc_threshold', String(videoOpts.sceneChangeThreshold));
+		opts.set('me_method', 'full');
+		opts.set('threads', String(os.cpus().length));
+	} else if (kind === 'nvenc') {
+		// NVIDIA NVENC：使用 constqp + qp 控制质量
+		if (q != null) {
+			opts.set('rc', 'constqp');
+			opts.set('qp', String(q));
+		}
+		// 质量差距：qmin/qmax
+		if (q != null && gap != null) {
+			opts.set('qmin', String(q));
+			opts.set('qmax', String(q + gap));
+		}
+		if (videoOpts.profile != null) opts.set('profile', videoOpts.profile);
+		if (videoOpts.minKeyframeInterval != null) opts.set('g', String(videoOpts.minKeyframeInterval));
+	} else if (kind === 'amf') {
+		// AMD AMF：使用 cqp + qp_i/qp_p 控制质量
+		if (q != null) {
+			opts.set('rc', 'cqp');
+			opts.set('qp_i', String(q));
+			opts.set('qp_p', String(q));
+		}
+		// 质量差距：min/max qp
+		if (q != null && gap != null) {
+			opts.set('min_qp_i', String(q));
+			opts.set('max_qp_i', String(q + gap));
+			opts.set('min_qp_p', String(q));
+			opts.set('max_qp_p', String(q + gap));
+		}
+		if (videoOpts.profile != null) opts.set('profile', videoOpts.profile);
+		if (videoOpts.minKeyframeInterval != null) opts.set('gops_per_idr', String(videoOpts.minKeyframeInterval));
+	} else if (kind === 'qsv') {
+		// Intel QSV：使用 global_quality 控制质量
+		if (q != null) opts.set('global_quality', String(q));
+		// 质量差距：min/max qp
+		if (q != null && gap != null) {
+			opts.set('min_qp_i', String(q));
+			opts.set('max_qp_i', String(q + gap));
+			opts.set('min_qp_p', String(q));
+			opts.set('max_qp_p', String(q + gap));
+		}
+		if (videoOpts.profile != null) opts.set('profile', videoOpts.profile);
+		if (videoOpts.minKeyframeInterval != null) opts.set('g', String(videoOpts.minKeyframeInterval));
+	}
+
+	// 硬件解码：根据编码器类型选择对应的 hwaccel
+	if (videoOpts.hardwareDecoder) {
+		if (kind === 'nvenc') {
+			opts.set('hwaccel', 'cuda');
+		} else if (kind === 'qsv') {
+			opts.set('hwaccel', 'qsv');
+		} else if (kind === 'amf') {
+			opts.set('hwaccel', 'd3d11va');
+		}
+	}
+
+	// 音频处理
+	if (audioStream) {
+		const targetAudioCodec = audioOpts.targetCodec || 'aac';
+		if (audioStream.codec_name === targetAudioCodec) {
+			// 编码一致直接复制轨道
+			opts.set('c:a', 'copy');
+		} else {
+			// 编码不一致则转码
+			opts.set('c:a', targetAudioCodec);
+			if (audioOpts.quality != null) {
+				opts.set('q:a', String(audioOpts.quality));
+			} else if (audioOpts.bitrate != null) {
+				opts.set('b:a', String(audioOpts.bitrate));
+			}
+		}
+	}
+
+	// 其它固定参数
+	opts.set('max_muxing_queue_size', '1024');
+	if (videoOpts.fpsMode != null) opts.set('fps_mode', videoOpts.fpsMode);
+
+	return opts;
+}
+
+/**
+	* 执行视频转码
+	* @param {string} src 源文件路径
+	* @param {string} dest 目标文件路径
+	* @param {object} videoStream 视频流
+	* @param {object|null} audioStream 音频流
+	* @param {string} videoEncoder 视频编码器
+	* @param {object} videoOpts 视频转码参数
+	* @param {object} audioOpts 音频转码参数
+	* @param {boolean} useHardware 是否使用硬件编码
+	* @param {Function} [onProgress] 进度回调
+	* @returns {Promise<object>} 转码结果
+	*/
+async function transcodeVideo(src, dest, videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware, onProgress) {
+	const outputOptions = buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware);
+
+	// 流映射：视频流 + 音频流
+	const maps = [`0:${videoStream.index}`];
+	if (audioStream) {
+		maps.push(`0:${audioStream.index}`);
+	}
+	outputOptions.set('map', maps);
+
+	return transcode(
+		src,
+		{},
+		dest,
+		outputOptions,
+		{
+			update: (data) => {
+				if (onProgress) onProgress(data);
+			}
+		}
+	);
+}
+
+/**
+	* 用 ffprobe 解析媒体文件，返回标准 ffprobe JSON
+	* 无法解析时抛出异常
+	* @param {string} filePath 媒体文件路径
+	* @returns {Promise<object>} ffprobe 结果
+	*/
+async function probeMedia(filePath) {
+	return ffprobe(filePath);
+}
+
+/**
+	* 校验转码目标文件：能被 ffprobe 正确解析，且至少有一个音频或视频轨道
+	* @param {string} filePath 目标文件路径
+	* @returns {Promise<boolean>} 校验通过返回 true，否则返回 false
+	*/
+async function verifyTranscodedFile(filePath) {
+	try {
+		const data = await ffprobe(filePath);
+		const streams = data.streams || [];
+		const hasVideo = streams.some((s) => s.codec_type === 'video');
+		const hasAudio = streams.some((s) => s.codec_type === 'audio');
+		return hasVideo || hasAudio;
+	} catch (e) {
+		return false;
+	}
+}
+
 module.exports = {
 	ffprobe,
 	initPath,
@@ -562,7 +825,16 @@ module.exports = {
 	getKeyframeTimestamps,
 	checkImageQuality,
 	extractVideoPreview,
-	sampleVideoFrames
+	sampleVideoFrames,
+	evalFrameRate,
+	calcDataDensity,
+	getLargestVideoStream,
+	getFirstAudioStream,
+	selectVideoEncoder,
+	buildOutputOptions,
+	transcodeVideo,
+	probeMedia,
+	verifyTranscodedFile
 };
 
 // 通过 getter 动态导出 fessonia 的类，保证 initPath 重新初始化后始终指向最新实例
