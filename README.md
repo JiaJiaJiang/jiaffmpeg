@@ -100,6 +100,8 @@ console.log('aac 可用:', ok);
 
 返回 `Promise`，转码成功时 resolve，失败时 reject。
 
+> 说明：`transcode` 会自动为命令添加全局参数 `-y`，即目标文件已存在时自动覆盖，避免 ffmpeg 交互式询问导致程序卡住。
+
 **事件监听器**（`events` 对象）：
 
 | 事件 | 参数 | 说明 |
@@ -284,6 +286,8 @@ console.log('可用编码器:', encoder); // 如 'hevc_nvenc'
   - `sceneChangeThreshold`：场景变化阈值（仅软件编码器）
   - `fpsMode`：帧率模式
   - `hardwareDecoder`：是否使用硬件解码
+  - `scale`：分辨率缩放，`"宽x高"` 字符串（绝对像素，如 `"1280x720"`）或数字（相对原视频的缩放倍率，如 `0.5` 表示缩小一半）
+  - `disableUpscale`：源分辨率小于 `scale` 指定的绝对分辨率时是否放大，默认 `true`（不放大，保持源分辨率）；设为 `false` 时放大到指定分辨率。仅对 `scale` 为绝对分辨率字符串时生效
 - `audioOpts`：音频转码参数对象（`targetCodec`、`quality`、`bitrate`）
 - `useHardware`：是否使用硬件编码
 - 返回：`Map<string, *>` 输出选项
@@ -297,7 +301,7 @@ const opts = jiaffmpeg.buildOutputOptions(
 );
 ```
 
-### `transcodeVideo(src, dest, videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware, onProgress)`
+### `transcodeVideo(src, dest, videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware, onProgress, onSpawn)`
 
 执行视频转码（自动构建输出选项并映射视频/音频流）。
 
@@ -310,6 +314,7 @@ const opts = jiaffmpeg.buildOutputOptions(
 - `audioOpts`：音频转码参数
 - `useHardware`：是否使用硬件编码
 - `onProgress`：可选，进度回调 `(data) => {}`
+- `onSpawn`：可选，命令真正执行前回调 `({ command }) => {}`，`command` 为最终生成的 ffmpeg 指令字符串
 - 返回：`Promise<object>` 转码结果
 
 ```js
@@ -318,7 +323,8 @@ await jiaffmpeg.transcodeVideo(
   videoStream, audioStream, 'hevc_nvenc',
   { quantizationQuality: 23 }, { targetCodec: 'aac' },
   true,
-  (data) => console.log('进度:', data)
+  (data) => console.log('进度:', data),
+  ({ command }) => console.log('执行指令:', command)
 );
 ```
 

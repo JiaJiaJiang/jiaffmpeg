@@ -136,7 +136,8 @@ function addExpandedOptions(entity, expanded) {
  */
 async function transcode(inputPath, inputOptions, outputPath, outputOptions, events, dryRun = false) {
 	const { FFmpegCommand, FFmpegInput, FFmpegOutput } = getFessonia();
-	const cmd = new FFmpegCommand();
+	// -y：目标文件已存在时自动覆盖，避免 ffmpeg 交互式询问导致程序卡住
+	const cmd = new FFmpegCommand(new Map([['y', null]]));
 	// 为命令分配全局唯一 id
 	cmd.taskId = nextTaskId++;
 	// 若传入了事件监听器，则绑定到命令对应的事件上
@@ -754,7 +755,16 @@ function buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, a
 			// "宽x高" 字符串：如 "1280x720"
 			const m = String(videoOpts.scale).toLowerCase().match(/^(\d+)\s*[x×]\s*(\d+)$/);
 			if (m) {
-				scaleExpr = `scale=${m[1]}:${m[2]}`;
+				const targetW = parseInt(m[1], 10);
+				const targetH = parseInt(m[2], 10);
+				const srcW = videoStream && videoStream.width;
+				const srcH = videoStream && videoStream.height;
+				// 源分辨率小于指定绝对分辨率时，根据 disableUpscale 决定是否放大（默认 true 不放大）
+				const disableUpscale = videoOpts.disableUpscale !== false;
+				const needUpscale = srcW != null && srcH != null && (srcW < targetW || srcH < targetH);
+				if (!(disableUpscale && needUpscale)) {
+					scaleExpr = `scale=${targetW}:${targetH}`;
+				}
 			}
 		}
 		if (scaleExpr) {
@@ -782,7 +792,7 @@ function buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, a
 	* @param {Function} [onProgress] 进度回调
 	* @returns {Promise<object>} 转码结果
 	*/
-async function transcodeVideo(src, dest, videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware, onProgress) {
+async function transcodeVideo(src, dest, videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware, onProgress, onSpawn) {
 	const outputOptions = buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, audioOpts, useHardware);
 
 	// 流映射：视频流 + 音频流
@@ -800,6 +810,9 @@ async function transcodeVideo(src, dest, videoStream, audioStream, videoEncoder,
 		{
 			update: (data) => {
 				if (onProgress) onProgress(data);
+			},
+			spawn: (data) => {
+				if (onSpawn) onSpawn(data);
 			}
 		}
 	);
