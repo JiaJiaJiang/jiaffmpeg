@@ -344,11 +344,18 @@ try {
 
 - `filePath`：目标文件路径
 - 返回：`Promise<boolean>` 校验通过返回 `true`，否则返回 `false`
+- 注意：若找不到 ffprobe 二进制（`err.code === 'ENOENT'`），会**抛出错误**（环境问题），而不是返回 `false`，以便调用方区分"环境问题"和"文件无效"
 
 ```js
-const valid = await jiaffmpeg.verifyTranscodedFile('output.mp4');
-if (!valid) {
-  console.log('转码结果无效');
+try {
+  const valid = await jiaffmpeg.verifyTranscodedFile('output.mp4');
+  if (!valid) {
+    console.log('转码结果无效');
+  }
+} catch (e) {
+  if (e.code === 'ENOENT') {
+    console.log('找不到 ffprobe 二进制，请检查配置');
+  }
 }
 ```
 
