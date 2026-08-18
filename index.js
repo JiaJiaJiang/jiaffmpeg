@@ -744,6 +744,24 @@ function buildOutputOptions(videoStream, audioStream, videoEncoder, videoOpts, a
 		}
 	}
 
+	// 分辨率缩放：scale 为 "宽x高" 字符串（绝对像素）或数字（相对原视频的缩放倍率）
+	if (videoOpts.scale != null) {
+		let scaleExpr;
+		if (typeof videoOpts.scale === 'number') {
+			// 缩放倍率：如 0.5 表示缩小一半
+			scaleExpr = `scale=iw*${videoOpts.scale}:ih*${videoOpts.scale}`;
+		} else {
+			// "宽x高" 字符串：如 "1280x720"
+			const m = String(videoOpts.scale).toLowerCase().match(/^(\d+)\s*[x×]\s*(\d+)$/);
+			if (m) {
+				scaleExpr = `scale=${m[1]}:${m[2]}`;
+			}
+		}
+		if (scaleExpr) {
+			opts.set('vf', scaleExpr);
+		}
+	}
+
 	// 其它固定参数
 	opts.set('max_muxing_queue_size', '1024');
 	if (videoOpts.fpsMode != null) opts.set('fps_mode', videoOpts.fpsMode);
