@@ -828,6 +828,11 @@ async function verifyTranscodedFile(filePath) {
 		const hasAudio = streams.some((s) => s.codec_type === 'audio');
 		return hasVideo || hasAudio;
 	} catch (e) {
+		// ENOENT 表示找不到 ffprobe 二进制（环境问题），向上抛出以便调用方区分
+		if (e && e.code === 'ENOENT') {
+			throw e;
+		}
+		// 其它错误表示文件本身无法解析，返回 false
 		return false;
 	}
 }
